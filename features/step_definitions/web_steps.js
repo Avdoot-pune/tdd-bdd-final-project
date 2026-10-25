@@ -1,19 +1,17 @@
 const { When, Then, BeforeAll, AfterAll, setDefaultTimeout } = require('@cucumber/cucumber');
-const { Builder, By, Key, until, Select } = require('selenium-webdriver');
+const { Builder, By, until, Select } = require('selenium-webdriver');
 const firefox = require('selenium-webdriver/firefox');
 const assert = require('assert');
 
-const BASE_URL = 'http://localhost:8080';
+const BASE_URL = process.env.WEB_BASE_URL || 'http://localhost:8080';
+const STEP_TIMEOUT_MS = 10000;
 
 let driver;
-
-// Set default timeout for asynchronous steps to 60 seconds
 setDefaultTimeout(60 * 1000);
 
 BeforeAll(async function () {
   const options = new firefox.Options();
   options.addArguments('-headless');
-
   driver = await new Builder()
     .forBrowser('firefox')
     .setFirefoxOptions(options)
@@ -26,32 +24,34 @@ AfterAll(async function () {
   }
 });
 
-// Helper function to get a form field by its ID
 async function getField(fieldName) {
-  const elementId = 'product_' + fieldName.toLowerCase().replace(/ /g, '_');
-  return driver.findElement(By.id(elementId));
+  const elementId = `product_${fieldName.toLowerCase().replace(/ /g, '_')}`;
+  const field = await driver.wait(until.elementLocated(By.id(elementId)), STEP_TIMEOUT_MS);
+  await driver.wait(until.elementIsVisible(field), STEP_TIMEOUT_MS);
+  return field;
 }
 
-
-
-// Helper function to get a button by its ID
 async function getButton(buttonText) {
-  const buttonId = buttonText.toLowerCase() + '-btn';
-  return driver.findElement(By.id(buttonId));
+  const buttonId = `${buttonText.toLowerCase()}-btn`;
+  return driver.wait(until.elementLocated(By.id(buttonId)), STEP_TIMEOUT_MS);
 }
 
 When('I visit the {string}', async function (pageName) {
-  await driver.get(BASE_URL + '/');
+  // This assignment's UI scenarios all start at the Home Page.
+  assert.ok(pageName, 'Page name must be supplied.');
+  await driver.get(`${BASE_URL}/`);
 });
 
 Then('I should see {string} in the title', async function (expectedTitle) {
+  await driver.wait(until.titleContains(expectedTitle), STEP_TIMEOUT_MS);
   const actualTitle = await driver.getTitle();
-  assert.strictEqual(actualTitle.includes(expectedTitle), true, `Expected title to include "${expectedTitle}", but got "${actualTitle}"`);
+  assert.ok(actualTitle.includes(expectedTitle),
+    `Expected title to include '${expectedTitle}', but got '${actualTitle}'.`);
 });
 
 Then('I should not see {string}', async function (text) {
   const pageSource = await driver.getPageSource();
-  assert.strictEqual(pageSource.includes(text), false, `Expected not to see "${text}" on the page`);
+  assert.ok(!pageSource.includes(text), `Expected not to see '${text}' on the page.`);
 });
 
 When('I set the {string} to {string}', async function (fieldName, value) {
@@ -61,45 +61,48 @@ When('I set the {string} to {string}', async function (fieldName, value) {
 });
 
 When('I select {string} in the {string} dropdown', async function (value, dropdownName) {
-  const dropdownElement = await getField(dropdownName);
-  const select = new Select(dropdownElement);
-  await select.selectByVisibleText(value);
+  const dropdown = await getField(dropdownName);
+  await new Select(dropdown).selectByVisibleText(value);
 });
-
-
 
 When('I copy the {string} field', async function (fieldName) {
   const field = await getField(fieldName);
-  this.copiedId = await field.getAttribute('value');
-  assert.ok(this.copiedId, `Could not copy value from field "${fieldName}"`);
+  this.copiedFieldValue = await field.getAttribute('value');
+  assert.ok(this.copiedFieldValue,
+    `Could not copy a value from field '${fieldName}'.`);
 });
 
 Then('the {string} field should be empty', async function (fieldName) {
   const field = await getField(fieldName);
   const value = await field.getAttribute('value');
-  assert.strictEqual(value, '', `Expected field "${fieldName}" to be empty, but it was "${value}"`);
+  assert.strictEqual(value, '', `Expected field '${fieldName}' to be empty, but it was '${value}'.`);
 });
 
 When('I paste the {string} field', async function (fieldName) {
-  assert.ok(this.copiedId, 'No ID was copied to paste.');
+  assert.ok(this.copiedFieldValue, 'No field value has been copied to paste.');
   const field = await getField(fieldName);
   await field.clear();
-  await field.sendKeys(this.copiedId);
+  await field.sendKeys(this.copiedFieldValue);
 });
 
 Then('I should see {string} in the {string} field', async function (expectedValue, fieldName) {
   const field = await getField(fieldName);
-  await driver.wait(until.elementIsVisible(field), 10000);
+  await driver.wait(async () => (await field.getAttribute('value')) === expectedValue,
+    STEP_TIMEOUT_MS,
+    `Expected '${expectedValue}' in field '${fieldName}'.`);
   const actualValue = await field.getAttribute('value');
-  assert.strictEqual(actualValue, expectedValue, `Expected "${expectedValue}" in field "${fieldName}", but got "${actualValue}"`);
+  assert.strictEqual(actualValue, expectedValue);
 });
 
 Then('I should see {string} in the {string} dropdown', async function (expectedValue, dropdownName) {
   const dropdown = await getField(dropdownName);
   const select = new Select(dropdown);
-  const selectedOption = await select.getFirstSelectedOption();
-  const actualValue = await selectedOption.getText();
-  assert.strictEqual(actualValue, expectedValue, `Expected "${expectedValue}" in dropdown "${dropdownName}", but got "${actualValue}"`);
+  await driver.wait(async () => {
+    const option = await select.getFirstSelectedOption();
+    return (await option.getText()) === expectedValue;
+  }, STEP_TIMEOUT_MS, `Expected '${expectedValue}' selected in '${dropdownName}' dropdown.`);
+  const actualValue = await (await select.getFirstSelectedOption()).getText();
+  assert.strictEqual(actualValue, expectedValue);
 });
 
 When('I change {string} to {string}', async function (fieldName, newValue) {
@@ -108,5 +111,30 @@ When('I change {string} to {string}', async function (fieldName, newValue) {
   await field.sendKeys(newValue);
 });
 
+When('I press the {string} button', async function (buttonText) {
+  const button = await getButton(buttonText);
+  await button.click();
+  // The following message/results step performs its own explicit wait.
+});
 
+Then('I should see the message {string}', async function (expectedMessage) {
+  const flash = await driver.wait(until.elementLocated(By.id('flash_message')), STEP_TIMEOUT_MS);
+  await driver.wait(until.elementTextContains(flash, expectedMessage), STEP_TIMEOUT_MS,
+    `Expected flash message to contain '${expectedMessage}'.`);
+  const actualMessage = await flash.getText();
+  assert.ok(actualMessage.includes(expectedMessage),
+    `Expected flash message '${expectedMessage}', but got '${actualMessage}'.`);
+});
 
+Then('I should see {string} in the results', async function (text) {
+  const results = await driver.wait(until.elementLocated(By.id('search_results')), STEP_TIMEOUT_MS);
+  await driver.wait(async () => (await results.getText()).includes(text), STEP_TIMEOUT_MS,
+    `Expected to see '${text}' in the search results.`);
+});
+
+Then('I should not see {string} in the results', async function (text) {
+  const results = await driver.wait(until.elementLocated(By.id('search_results')), STEP_TIMEOUT_MS);
+  const resultsText = await results.getText();
+  assert.ok(!resultsText.includes(text),
+    `Expected not to see '${text}' in the search results, but found it.`);
+});
